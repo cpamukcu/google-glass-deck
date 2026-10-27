@@ -557,7 +557,9 @@ function startLive(info){
       if(since===null)since=r.id;else for(const c of r.cmds){since=Math.max(since,c.id);handle(c)}}catch(e){}
     setTimeout(poll,200)})();
 }
-if(!PREVIEW&&!PRINT){
+/* the GitHub Pages copy is for viewing (e.g. a link sent to the teacher): no phone remote, no QR. Add ?remote to present from it. */
+const SHARED=/github\.io$/.test(location.hostname)&&!Q.includes('remote');
+if(!PREVIEW&&!PRINT&&!SHARED){
   startRelay();
   if(location.protocol.startsWith('http'))
     fetch('/api/info',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(startLive).catch(()=>{});
