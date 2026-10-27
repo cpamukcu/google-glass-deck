@@ -523,11 +523,17 @@ function paired(){if(pairedOnce)return;pairedOnce=true;$('qr').hidden=true}
 
 /* internet relay: every message carries an id, because it arrives once per broker */
 const seen=new Set();
+/* the online QR is shown only once the GitHub Pages copy really loads (a 404 page would be worse than the local QR) */
+let pagesOk=false,relayQr=false;
+function tryRelayQr(){if(relayOn&&pagesOk&&!relayQr){relayQr=true;showQr(ONLINE_REMOTE+'?room='+ROOM,ROOM)}}
+function probePages(){const im=new Image();im.onload=()=>{pagesOk=true;tryRelayQr()};
+  im.onerror=()=>setTimeout(probePages,30000);im.src=ONLINE_REMOTE.replace(/remote\.html$/,'assets/img/zju-logo.png')+'?t='+Date.now()}
 function startRelay(){
   if(!window.mqtt||!ONLINE_REMOTE)return;
+  probePages();
   BROKERS.forEach(u=>{try{
     const c=mqtt.connect(u,{clientId:'cpdeck_'+ROOM+'_'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,keepalive:30});
-    c.on('connect',()=>{c.subscribe(TOPIC+'cmd');if(!relayOn){relayOn=true;showQr(ONLINE_REMOTE+'?room='+ROOM,ROOM)}sync()});
+    c.on('connect',()=>{c.subscribe(TOPIC+'cmd');relayOn=true;tryRelayQr();sync()});
     c.on('error',()=>{});
     c.on('message',(t,p)=>{try{const m=JSON.parse(p.toString());if(!m.id||seen.has(m.id))return;
       seen.add(m.id);if(seen.size>300)seen.delete(seen.values().next().value);paired();handle(m)}catch(e){}});
@@ -536,7 +542,7 @@ function startRelay(){
 }
 
 /* local server: the server lists phone-reachable addresses best first (hotspot, Wi-Fi; VPN tunnels left out) */
-function qrFromInfo(info){if(relayOn)return;const host=(info.ips||[])[0];
+function qrFromInfo(info){if(relayQr)return;const host=(info.ips||[])[0];
   if(host&&CODE)showQr(`http://${host}:${location.port||80}/remote.html?code=${CODE}`,CODE)}
 function startLive(info){
   LIVE=true;CODE=info.code||'';
