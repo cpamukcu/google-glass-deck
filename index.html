@@ -299,6 +299,7 @@ html.print .glass::before{display:none}
 <div id="bar"><button id="bPrev">←</button><button id="bNext">→</button><button id="bNotes">Notes (N)</button><button id="bQr">QR (H)</button><button id="bFull">Full (F)</button></div>
 
 <script src="assets/vendor/qrcode.js"></script>
+<script src="assets/vendor/mqtt.min.js"></script>
 <script>
 /* ---------- speaker notes: line = first sentence, say = bullets, if_asked = backup, time = seconds ----------
    A bullet that starts with [CLICK] is a cue: press Next there (shown as an amber CLICK chip on the phone). */
@@ -367,8 +368,6 @@ const VIDEOS={0:'V1',4:'V3'};  /* V3 = slide 5 → 6; until media/V3.mp4 exists 
 /* resting video backgrounds: slide k loops media/<name>.mp4 over its K image while you talk, e.g. {0:'L1'}.
    Slide 1 rests on the first frame of V1 (make-reverse.sh writes it as web/K1.jpg), so it needs no loop. */
 const LOOPS={};
-/* optional backup remote over PeerJS: set to a hosted copy of remote.html (needs internet; may be blocked in China) */
-const BACKUP_REMOTE='';
 
 const $=id=>document.getElementById(id), de=document.documentElement;
 const stage=$('stage'), slides=[...document.querySelectorAll('.slide')], TOTAL=slides.length;
@@ -494,25 +493,50 @@ function prev(){if(busy){queued='prev';return}
   if(on.length){let card=false;for(const e of on){if(!e.classList.contains('ar')){if(card)break;card=true}e.classList.remove('on')}sync();return}
   if(cur>0)move(cur-1,true)}
 
-/* ---------- phone remote: local server (main) + PeerJS (backup) ---------- */
-let LIVE=false,CODE='',peerConns=[],pairedOnce=false,blackOn=false;
+/* ---------- phone remote ----------
+   Main way: an internet relay (public MQTT brokers, EMQX China first). The phone page is online on GitHub Pages,
+   so it works on any Wi-Fi, campus networks that block phone-to-laptop traffic included.
+   Backup way: the local server (present-server.js), for a room with Wi-Fi but no internet. */
+const ONLINE_REMOTE='https://cpamukcu.github.io/google-glass-deck/remote.html';
+const BROKERS=['wss://broker-cn.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt'];
+const ROOM=(()=>{const gen=()=>Array.from({length:6},()=>'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*31)]).join('');
+  try{let r=sessionStorage.getItem('glassRoom');if(!r){r=gen();sessionStorage.setItem('glassRoom',r)}return r}catch(e){return gen()}})();
+const TOPIC='cp-glass-deck/v1/'+ROOM+'/';
+let LIVE=false,CODE='',pairedOnce=false,blackOn=false,mq=[],relayOn=false;
 function state(){const s=slides[cur];return{slide:cur,total:TOTAL,title:NOTES[cur].title,next:(NOTES[cur+1]||{}).title||'',notes:NOTES[cur],
   steps:s.querySelectorAll('.step.on:not(.ar)').length,stepsTotal:s.querySelectorAll('.step:not(.ar)').length,moving:busy,video:vidOn,black:blackOn,t:Date.now()}}
 function sync(){if(PREVIEW||PRINT)return;const st=state();
   if(LIVE)fetch('/api/state',{method:'POST',body:JSON.stringify(st)}).catch(()=>{});
-  peerConns.forEach(c=>{try{c.open&&c.send(st)}catch(e){}})}
+  const m=JSON.stringify(st);mq.forEach(c=>{try{c.connected&&c.publish(TOPIC+'state',m,{qos:0,retain:true})}catch(e){}})}
 function handle(c){if(!c)return;
   if(c.cmd==='next')next();else if(c.cmd==='prev')prev();else if(c.cmd==='goto')goTo(c.n);else if(c.cmd==='first')goTo(0);
   else if(c.cmd==='black')toggleBlack();else if(c.cmd==='sync')sync()}
 let qrUrl='';
 function showQr(url,code){
   if(url===qrUrl)return;const first=!qrUrl;qrUrl=url;
+  if(!$('qr').querySelector('.code'))$('qr').insertAdjacentHTML('afterbegin','<div class="code"></div>');
   try{const q=qrcode(0,'M');q.addData(url);q.make();$('qr').querySelector('.code').innerHTML=q.createSvgTag(5,2)}catch(e){}
-  $('qr').querySelector('b').textContent=code;$('qr').querySelector('.url').textContent=url.replace(/^http:\/\//,'').replace(/\?.*/,'');
+  $('qr').querySelector('.txt').innerHTML='Phone remote<b></b><span class="url"></span>';
+  $('qr').querySelector('b').textContent=code;$('qr').querySelector('.url').textContent=url.replace(/^https?:\/\//,'').replace(/\?.*/,'');
   if(first&&!pairedOnce)$('qr').hidden=false}
 function paired(){if(pairedOnce)return;pairedOnce=true;$('qr').hidden=true}
-/* the server lists phone-reachable addresses best first (hotspot, Wi-Fi; VPN tunnels left out) */
-function qrFromInfo(info){const host=(info.ips||[])[0];
+
+/* internet relay: every message carries an id, because it arrives once per broker */
+const seen=new Set();
+function startRelay(){
+  if(!window.mqtt||!ONLINE_REMOTE)return;
+  BROKERS.forEach(u=>{try{
+    const c=mqtt.connect(u,{clientId:'cpdeck_'+ROOM+'_'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,keepalive:30});
+    c.on('connect',()=>{c.subscribe(TOPIC+'cmd');if(!relayOn){relayOn=true;showQr(ONLINE_REMOTE+'?room='+ROOM,ROOM)}sync()});
+    c.on('error',()=>{});
+    c.on('message',(t,p)=>{try{const m=JSON.parse(p.toString());if(!m.id||seen.has(m.id))return;
+      seen.add(m.id);if(seen.size>300)seen.delete(seen.values().next().value);paired();handle(m)}catch(e){}});
+    mq.push(c)}catch(e){}});
+  setInterval(sync,2000);
+}
+
+/* local server: the server lists phone-reachable addresses best first (hotspot, Wi-Fi; VPN tunnels left out) */
+function qrFromInfo(info){if(relayOn)return;const host=(info.ips||[])[0];
   if(host&&CODE)showQr(`http://${host}:${location.port||80}/remote.html?code=${CODE}`,CODE)}
 function startLive(info){
   LIVE=true;CODE=info.code||'';
@@ -527,20 +551,15 @@ function startLive(info){
       if(since===null)since=r.id;else for(const c of r.cmds){since=Math.max(since,c.id);handle(c)}}catch(e){}
     setTimeout(poll,200)})();
 }
-function startPeer(code){
-  const s=document.createElement('script');s.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-  s.onload=()=>{try{const p=new Peer('cpglass-'+code+'-deck');
-    p.on('open',()=>{if(!LIVE&&BACKUP_REMOTE)showQr(BACKUP_REMOTE+'?peer='+code,code)});
-    p.on('connection',c=>{c.on('open',()=>{peerConns.push(c);paired();c.send(state())});
-      c.on('data',d=>{if(d&&d.code===code)handle(d)});c.on('close',()=>peerConns=peerConns.filter(x=>x!==c))});
-    p.on('disconnected',()=>{try{p.reconnect()}catch(e){}});p.on('error',()=>{})}catch(e){}};
-  document.head.appendChild(s);
-}
 if(!PREVIEW&&!PRINT){
-  const ok=location.protocol.startsWith('http');
-  (ok?fetch('/api/info',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()):Promise.reject())
-    .then(startLive).catch(()=>{})
-    .finally(()=>{if(BACKUP_REMOTE||Q.includes('peer')){if(!CODE)CODE=String(1000+Math.floor(Math.random()*9000));startPeer(CODE)}});
+  startRelay();
+  if(location.protocol.startsWith('http'))
+    fetch('/api/info',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(startLive).catch(()=>{});
+  /* neither way came up: say so instead of silently having no remote */
+  setTimeout(()=>{if(LIVE||relayOn)return;
+    $('qr').querySelector('.code')?.remove();
+    $('qr').querySelector('.txt').innerHTML='Phone remote is off<b style="font-size:20px;letter-spacing:0">No internet, no local server</b><span class="url">Use arrow keys · H hides this</span>';
+    $('qr').hidden=false},12000);
 }
 
 /* ---------- controls: keys, click, touch, bar ---------- */
@@ -550,7 +569,7 @@ addEventListener('mousemove',wake,{passive:true});wake();
 const toggleNotes=()=>{notes.classList.toggle('show');$('bNotes').classList.toggle('on',notes.classList.contains('show'))};
 const toggleFull=()=>{const fe=document.fullscreenElement||document.webkitFullscreenElement;
   if(fe)(document.exitFullscreen||document.webkitExitFullscreen).call(document);else(de.requestFullscreen||de.webkitRequestFullscreen).call(de)};
-const toggleQr=()=>{if($('qr').querySelector('svg'))$('qr').hidden=!$('qr').hidden};
+const toggleQr=()=>{$('qr').hidden=!$('qr').hidden};
 function toggleBlack(){blackOn=!blackOn;$('black').classList.toggle('on',blackOn);sync()}
 bar.addEventListener('click',e=>e.stopPropagation());notes.addEventListener('click',e=>e.stopPropagation());
 $('bPrev').onclick=prev;$('bNext').onclick=next;$('bNotes').onclick=toggleNotes;$('bFull').onclick=toggleFull;$('bQr').onclick=toggleQr;

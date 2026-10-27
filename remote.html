@@ -51,10 +51,14 @@ footer button:active{transform:scale(.97)}
 <script>
 (function(){
   var $=function(id){return document.getElementById(id)};
-  var qs=new URLSearchParams(location.search), PEER=qs.get('peer');
-  var CODE=qs.get('code')||PEER||'';
-  try{if(CODE)localStorage.setItem('glassCode',CODE);else CODE=localStorage.getItem('glassCode')||''}catch(e){}
-  var conn=null,lastKey='',lastOk=0,wrong=false;
+  // ?room=XXXXXX = internet relay (page opened from GitHub Pages); ?code=1234 = the laptop's local server
+  var qs=new URLSearchParams(location.search), ROOM=(qs.get('room')||'').toUpperCase();
+  var CODE=qs.get('code')||'';
+  try{if(CODE)localStorage.setItem('glassCode',CODE);else if(!ROOM)CODE=localStorage.getItem('glassCode')||''}catch(e){}
+  var mq=[],lastKey='',lastOk=0,wrong=false;
+  var BROKERS=['wss://broker-cn.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt'];
+  var TOPIC='cp-glass-deck/v1/'+ROOM+'/';
+  function mid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 
   var nf=24;try{nf=parseInt(localStorage.getItem('glassNf'),10)||24}catch(e){}
   function setNf(v){nf=Math.max(16,Math.min(40,v));document.documentElement.style.setProperty('--nf',nf+'px');try{localStorage.setItem('glassNf',nf)}catch(e){}}
@@ -62,7 +66,7 @@ footer button:active{transform:scale(.97)}
 
   function send(cmd,n){
     var m={cmd:cmd,n:n,code:CODE};
-    if(PEER){if(conn&&conn.open)conn.send(m)}
+    if(ROOM){m.id=mid();var s=JSON.stringify(m);mq.forEach(function(c){try{c.connected&&c.publish(TOPIC+'cmd',s)}catch(e){}})}
     else fetch('/api/cmd',{method:'POST',body:JSON.stringify(m)}).then(function(r){if(r.status===403)badCode()}).catch(function(){});
     try{navigator.vibrate&&navigator.vibrate(15)}catch(e){}
     if(cmd==='next')startTimer();
@@ -114,8 +118,8 @@ footer button:active{transform:scale(.97)}
   document.addEventListener('click',wake);wake();
   document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'){wake();lastKey=''}});
 
-  if(!PEER){
-    // main way: the laptop's local server. Polling keeps trying, so it reconnects by itself after a refresh or a Wi-Fi drop.
+  if(!ROOM){
+    // backup way: the laptop's local server (same Wi-Fi or hotspot, no internet needed). Polling keeps trying, so it reconnects by itself after a refresh or a Wi-Fi drop.
     if(!CODE)badCode();
     (function hello(){fetch('/api/hello',{method:'POST',body:JSON.stringify({code:CODE})}).then(function(r){if(r.status===403)badCode()}).catch(function(){});setTimeout(hello,3000)})();
     (function poll(){
@@ -124,16 +128,21 @@ footer button:active{transform:scale(.97)}
         .catch(function(){status(false,'No connection. Retrying…')})
         .then(function(){setTimeout(poll,400)})})();
   }else{
-    // backup way: PeerJS over the internet (can be blocked in China)
-    var s=document.createElement('script');s.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-    s.onerror=function(){status(false,'PeerJS blocked. Use the local Wi-Fi way.')};
-    s.onload=function(){var peer=new Peer();
-      function connect(){conn=peer.connect('cpglass-'+PEER+'-deck',{reliable:true});
-        conn.on('open',function(){status(true,'Connected (backup)');conn.send({cmd:'sync',code:CODE})});
-        conn.on('data',function(st){lastOk=Date.now();render(st)});
-        conn.on('close',function(){status(false,'Reconnecting…');setTimeout(connect,2000)})}
-      peer.on('open',connect);peer.on('error',function(){status(false,'Reconnecting…');setTimeout(function(){if(!conn||!conn.open)connect()},3000)});
-      peer.on('disconnected',function(){try{peer.reconnect()}catch(e){}})};
+    // main way: internet relay through public MQTT brokers, so any Wi-Fi or mobile data works.
+    // The deck publishes its state with "retain", so the phone gets the current slide the moment it connects.
+    status(false,'Connecting…');$('dot').className='wait';
+    var s=document.createElement('script');s.src='assets/vendor/mqtt.min.js';
+    s.onerror=function(){status(false,'Could not load. Check the phone has internet.')};
+    s.onload=function(){
+      BROKERS.forEach(function(u){try{
+        var c=mqtt.connect(u,{clientId:'cpphone_'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,keepalive:30});
+        c.on('connect',function(){c.subscribe(TOPIC+'state');c.publish(TOPIC+'cmd',JSON.stringify({id:mid(),cmd:'sync'}));
+          if(!lastOk){$('dot').className='wait';$('stat').textContent='Online. Waiting for the laptop ('+ROOM+')'}});
+        c.on('error',function(){});
+        c.on('message',function(t,p){try{var st=JSON.parse(p.toString());if(Date.now()-st.t>60000)return;lastOk=Date.now();status(true,'Connected · room '+ROOM);render(st)}catch(e){}});
+        mq.push(c)}catch(e){}});
+      setInterval(function(){if(lastOk&&Date.now()-lastOk>12000)status(false,'Deck not answering. Retrying…')},3000);
+    };
     document.head.appendChild(s);
   }
 })();

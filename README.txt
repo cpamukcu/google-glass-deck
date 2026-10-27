@@ -20,14 +20,18 @@ PHONE PAGE
   Timer starts at the first Next. Orange at 6:00, red at 7:00. Tap the timer to reset it.
   Screen stays on. If Wi-Fi drops or you refresh, it reconnects by itself.
 
+HOW THE PHONE CONNECTS
+  Main way (any Wi-Fi, campus too): over the internet. The QR opens
+  cpamukcu.github.io/google-glass-deck/remote.html?room=XXXXXX and the phone and laptop talk through
+  a free relay (EMQX China, HiveMQ). Both just need internet. The 6-letter room code is shown by the QR.
+  Backup way (no internet): if the relay cannot connect, the QR shows the laptop's local address
+  instead. Then the phone must be on the same Wi-Fi as the laptop, or the laptop on the phone's hotspot.
+
 IF THE PHONE DOES NOT CONNECT
-  a) Check the phone and the Mac are on the SAME network (best: the phone's hotspot).
-  b) Restart: close Terminal, double-click "Start Presenting.command" again, scan the NEW QR
-     (the code changes every start).
+  a) Turn OFF VPNs on the phone and the laptop (Mullvad, iKuuu, Shadowrocket, Clash...).
+  b) Refresh the deck and scan the QR again.
   c) Still no luck: use the arrow keys or a USB / Bluetooth clicker (they send arrow keys).
      The deck works fully without the phone.
-  d) Backup way (PeerJS over the internet): only if remote.html is hosted online and
-     BACKUP_REMOTE is set in index.html. PeerJS servers are often blocked in China, so do not count on it.
 
 FILES
   index.html               the deck (7 slides, notes are in the NOTES list at the top of the script)

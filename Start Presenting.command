@@ -8,7 +8,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR" || exit 1
 NODE=$(command -v node || echo /usr/local/bin/node)
 # A VPN can block the phone from reaching this Mac. Warn (do not change anything).
-if command -v mullvad >/dev/null && mullvad status 2>/dev/null | grep -q '^Connected' && mullvad lan get 2>/dev/null | grep -q block; then
+if command -v mullvad >/dev/null && mullvad lan get 2>/dev/null | grep -q block; then
   echo ""
   echo "  !! Mullvad VPN is blocking your phone. Fix it with ONE of these, then scan again:"
   echo "     - Mullvad app > Settings > VPN settings > Local network sharing: ON"
