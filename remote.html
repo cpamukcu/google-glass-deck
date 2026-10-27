@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Glass Remote</title>
+<style>
+:root{--bg:#000;--card:#16171C;--fg:#F5F5F7;--muted:#8A8F9C;--cyan:#5EE7FF;--violet:#8B7BFF;--amber:#FF9F0A;--green:#30D158;--red:#FF453A;--line:rgba(255,255,255,.12);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,"Helvetica Neue",sans-serif;--nf:24px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:var(--font)}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top,0px) 16px 0;overscroll-behavior:none;-webkit-user-select:none;user-select:none}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+header{display:flex;align-items:center;gap:10px;padding:12px 0 8px;font-size:14px;color:var(--muted)}
+#dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+#dot.ok{background:var(--green)}#dot.wait{background:var(--amber)}#dot.off{background:var(--red)}
+#stat{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#timer{font-variant-numeric:tabular-nums;font-size:22px;font-weight:700;padding:6px 14px;border-radius:999px;background:var(--card);color:var(--fg)}
+#timer.run{color:var(--green)}#timer.warn{color:var(--amber)}#timer.over{color:#fff;background:var(--red)}
+#now{padding:4px 0 10px;border-bottom:1px solid var(--line)}
+.kick{margin:0;font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);display:flex;justify-content:space-between}
+h1{margin:6px 0 2px;font-size:22px;line-height:1.2;font-weight:700;color:var(--muted)}
+#notes{flex:1;min-height:0;overflow-y:auto;padding:12px 2px 18px;font-size:var(--nf);line-height:1.42;-webkit-overflow-scrolling:touch}
+#notes .line{font-size:1.15em;font-weight:700;color:#fff;margin:0 0 .6em}
+#notes ul{margin:0;padding-left:1.1em}
+#notes li{margin:0 0 .5em;color:#fff}
+#notes li::marker{color:var(--cyan)}
+#notes li.click{list-style:none;margin:.7em 0 .7em -1.1em;color:#FFC266}
+#notes li.click::before{content:"CLICK";display:inline-block;margin-right:.45em;padding:.12em .7em;border-radius:999px;background:var(--amber);color:#000;font-size:.62em;font-weight:800;letter-spacing:.05em;vertical-align:.15em}
+#notes .ask{margin-top:.9em;font-size:.68em;color:var(--muted);border-top:1px solid var(--line);padding-top:.7em}
+#notes .ask b{color:var(--violet)}
+#tools{display:flex;gap:8px;padding:8px 0}
+#tools button{flex:1;padding:11px 0;border-radius:12px;background:var(--card);font-size:15px;font-weight:600}
+#tools button.on{background:#fff;color:#000}
+footer{display:grid;grid-template-columns:1fr 1.6fr;gap:10px;padding:4px 0 calc(12px + env(safe-area-inset-bottom,0px))}
+footer button{height:120px;border-radius:24px;font-size:26px;font-weight:800;background:var(--card);touch-action:manipulation}
+#nextBtn{background:linear-gradient(135deg,#1f7cff,#7b5cff);color:#fff}
+#nextBtn.busy{opacity:.5}
+footer button:active{transform:scale(.97)}
+</style>
+</head>
+<body>
+<header><i id="dot"></i><span id="stat">Connecting…</span><button id="timer" aria-label="Reset timer">00:00</button></header>
+<section id="now"><p class="kick"><span>Slide <span id="num">–</span> / <span id="tot">–</span></span><span id="tm"></span></p><h1 id="title">Waiting for the deck</h1></section>
+<article id="notes" aria-live="polite">Open the deck on the laptop, then scan the QR code on slide 1.</article>
+<div id="tools"><button id="first">First slide</button><button id="black">Black screen</button><button id="aminus" aria-label="Smaller text">A−</button><button id="aplus" aria-label="Bigger text">A+</button></div>
+<footer><button id="prevBtn">‹ Back</button><button id="nextBtn">Next ›</button></footer>
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id)};
+  var qs=new URLSearchParams(location.search), PEER=qs.get('peer');
+  var CODE=qs.get('code')||PEER||'';
+  try{if(CODE)localStorage.setItem('glassCode',CODE);else CODE=localStorage.getItem('glassCode')||''}catch(e){}
+  var conn=null,lastKey='',lastOk=0,wrong=false;
+
+  var nf=24;try{nf=parseInt(localStorage.getItem('glassNf'),10)||24}catch(e){}
+  function setNf(v){nf=Math.max(16,Math.min(40,v));document.documentElement.style.setProperty('--nf',nf+'px');try{localStorage.setItem('glassNf',nf)}catch(e){}}
+  setNf(nf);
+
+  function send(cmd,n){
+    var m={cmd:cmd,n:n,code:CODE};
+    if(PEER){if(conn&&conn.open)conn.send(m)}
+    else fetch('/api/cmd',{method:'POST',body:JSON.stringify(m)}).then(function(r){if(r.status===403)badCode()}).catch(function(){});
+    try{navigator.vibrate&&navigator.vibrate(15)}catch(e){}
+    if(cmd==='next')startTimer();
+  }
+  var lastTap=0;
+  $('nextBtn').onclick=function(){var t=Date.now();if(t-lastTap<350)return;lastTap=t;send('next')};
+  $('prevBtn').onclick=function(){var t=Date.now();if(t-lastTap<350)return;lastTap=t;send('prev')};
+  $('first').onclick=function(){send('goto',0)};
+  $('black').onclick=function(){send('black')};
+  $('aplus').onclick=function(){setNf(nf+2)};$('aminus').onclick=function(){setNf(nf-2)};
+
+  // timer: starts at the first Next; orange at 6:00, red at 7:00; tap it to reset
+  var t0=0;
+  function startTimer(){if(!t0){t0=Date.now();try{localStorage.setItem('glassT0',t0)}catch(e){}}}
+  try{var s0=+localStorage.getItem('glassT0');if(s0&&Date.now()-s0<3600e3)t0=s0}catch(e){}
+  $('timer').onclick=function(){t0=0;try{localStorage.removeItem('glassT0')}catch(e){}};
+  setInterval(function(){var s=t0?Math.floor((Date.now()-t0)/1000):0,el=$('timer');
+    el.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+    el.className=!t0?'':s>=420?'over':s>=360?'warn':'run'},500);
+
+  function badCode(){wrong=true;$('dot').className='off';$('stat').textContent='Wrong code. Scan the QR on the laptop again.'}
+  function status(ok,msg){if(wrong)return;$('dot').className=ok?'ok':'off';$('stat').textContent=msg}
+
+  function render(st){
+    if(!st||st.slide===undefined)return;
+    $('num').textContent=st.slide+1;$('tot').textContent=st.total||'–';
+    var N=st.notes||{};
+    $('title').textContent=st.title||'';
+    var step=st.stepsTotal?' · click '+st.steps+'/'+st.stepsTotal:'';
+    $('tm').textContent=(N.time?N.time+' s':'')+step;
+    $('nextBtn').classList.toggle('busy',!!st.moving);
+    $('nextBtn').textContent=st.video?'Video playing…':'Next ›';
+    $('black').classList.toggle('on',!!st.black);
+    if(st.slide>0)startTimer();
+    var key=st.slide+'|'+(N.line||'');
+    if(key===lastKey)return;lastKey=key;
+    var el=$('notes');el.textContent='';
+    var p=document.createElement('p');p.className='line';p.textContent=N.line||'';el.appendChild(p);
+    var ul=document.createElement('ul');(N.say||[]).forEach(function(t){var li=document.createElement('li');
+      if(t.indexOf('[CLICK]')===0){li.className='click';t=t.slice(7).trim()}
+      li.appendChild(document.createTextNode(t));ul.appendChild(li)});el.appendChild(ul);
+    if(N.if_asked){var a=document.createElement('div');a.className='ask';var b=document.createElement('b');b.textContent='If asked: ';a.appendChild(b);a.appendChild(document.createTextNode(N.if_asked));el.appendChild(a)}
+    el.scrollTop=0;
+  }
+
+  // keep the phone screen on
+  var lock=null;
+  function wake(){try{if(navigator.wakeLock&&!lock)navigator.wakeLock.request('screen').then(function(l){lock=l;l.addEventListener('release',function(){lock=null})}).catch(function(){})}catch(e){}}
+  document.addEventListener('click',wake);wake();
+  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'){wake();lastKey=''}});
+
+  if(!PEER){
+    // main way: the laptop's local server. Polling keeps trying, so it reconnects by itself after a refresh or a Wi-Fi drop.
+    if(!CODE)badCode();
+    (function hello(){fetch('/api/hello',{method:'POST',body:JSON.stringify({code:CODE})}).then(function(r){if(r.status===403)badCode()}).catch(function(){});setTimeout(hello,3000)})();
+    (function poll(){
+      fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(function(st){lastOk=Date.now();
+          var fresh=Date.now()-st.t<5000;status(fresh,fresh?'Connected':'Laptop found, deck not open');render(st)})
+        .catch(function(){status(false,'No connection. Retrying…')})
+        .then(function(){setTimeout(poll,400)})})();
+  }else{
+    // backup way: PeerJS over the internet (can be blocked in China)
+    var s=document.createElement('script');s.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+    s.onerror=function(){status(false,'PeerJS blocked. Use the local Wi-Fi way.')};
+    s.onload=function(){var peer=new Peer();
+      function connect(){conn=peer.connect('cpglass-'+PEER+'-deck',{reliable:true});
+        conn.on('open',function(){status(true,'Connected (backup)');conn.send({cmd:'sync',code:CODE})});
+        conn.on('data',function(st){lastOk=Date.now();render(st)});
+        conn.on('close',function(){status(false,'Reconnecting…');setTimeout(connect,2000)})}
+      peer.on('open',connect);peer.on('error',function(){status(false,'Reconnecting…');setTimeout(function(){if(!conn||!conn.open)connect()},3000)});
+      peer.on('disconnected',function(){try{peer.reconnect()}catch(e){}})};
+    document.head.appendChild(s);
+  }
+})();
+</script>
+</body>
+</html>
